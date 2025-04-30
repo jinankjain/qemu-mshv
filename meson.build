@@ -324,6 +324,8 @@ accelerator_targets += { 'CONFIG_XEN': xen_targets }
 
 if cpu == 'x86_64'
   mshv_targets = ['x86_64-softmmu']
+elif cpu == 'aarch64'
+  mshv_targets = ['aarch64-softmmu']
 else
   mshv_targets = []
 endif
@@ -886,8 +888,8 @@ if get_option('kvm').allowed() and host_os == 'linux'
 endif
 
 if get_option('mshv').allowed() and host_os == 'linux'
-  if get_option('mshv').enabled() and host_machine.cpu() != 'x86_64'
-    error('mshv accelerator requires x64_64 host')
+  if get_option('mshv').enabled() and (host_machine.cpu() != 'x86_64' and host_machine.cpu() != 'aarch64')
+    error('mshv accelerator requires x64_64 or aarch64 host')
   endif
   accelerators += 'CONFIG_MSHV'
 endif
