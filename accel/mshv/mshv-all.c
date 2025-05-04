@@ -442,6 +442,8 @@ static int mshv_init_vcpu(CPUState *cpu)
 
     ret = mshv_create_vcpu(vm_fd, vp_index, &cpu->accel->cpufd);
     if (ret < 0) {
+        error_report("Failed to create vcpu %d: %s", cpu->cpu_index,
+                     strerror(errno));
         return -1;
     }
 

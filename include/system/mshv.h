@@ -141,14 +141,16 @@ typedef struct MshvCreatePartitionArgsMgns {
 #define DF_SHIFT   10
 #define OF_SHIFT   11
 
+#if defined(__x86_64__)
 /* rflags bits (bit masks) */
-#define CF         ((uint64_t)1 << CF_SHIFT)
+#define CF         (1ULL << CF_SHIFT)
 #define PF         ((uint64_t)1 << PF_SHIFT)
 #define AF         ((uint64_t)1 << AF_SHIFT)
 #define ZF         ((uint64_t)1 << ZF_SHIFT)
 #define SF         ((uint64_t)1 << SF_SHIFT)
 #define DF         ((uint64_t)1 << DF_SHIFT)
 #define OF         ((uint64_t)1 << OF_SHIFT)
+#endif
 
 typedef struct MshvFPU {
   uint8_t fpr[8][16];
