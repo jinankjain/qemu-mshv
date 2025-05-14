@@ -206,7 +206,7 @@ static int set_standard_regs(const CPUState *cpu)
     assocs[30].value.reg64 = env->xregs[30];
     assocs[31].value.reg64 = env->pc;
 
-    printf("set_standard_regs: pc: %lx\n", env->pc);
+    // printf("set_standard_regs: pc: %lx\n", env->pc);
 
     ret = mshv_set_generic_regs(cpu_fd, assocs, n_regs);
     if (ret < 0)
@@ -286,17 +286,196 @@ void mshv_arch_destroy_vcpu(CPUState *cpu)
     return;
 }
 
+static int set_memory_info(const struct hyperv_message *msg,
+                           struct hv_arm64_memory_intercept_message *info)
+{
+    if (msg->header.message_type != HVMSG_GPA_INTERCEPT
+            && msg->header.message_type != HVMSG_UNMAPPED_GPA
+            && msg->header.message_type != HVMSG_UNACCEPTED_GPA) {
+        error_report("invalid message type");
+        return -1;
+    }
+    memcpy(info, msg->payload, sizeof(*info));
+
+    return 0;
+}
+
+typedef union {
+    uint64_t raw;
+    struct {
+        uint32_t iss: 25;
+        uint32_t il: 1;
+        uint32_t ec: 6;
+        uint32_t iss2: 5;
+        uint32_t _rsvd: 27;
+    } __attribute__((packed));
+} EsrEl2;
+
+typedef union {
+    uint32_t raw;
+    struct {
+        uint32_t dfsc: 6;
+        uint32_t wnr: 1;
+        uint32_t s1ptw: 1;
+        uint32_t cm: 1;
+        uint32_t ea: 1;
+        uint32_t fnv: 1;
+        uint32_t set: 2;
+        uint32_t vncr: 1;
+        uint32_t ar: 1;
+        uint32_t sf: 1;
+        uint32_t srt: 5;
+        uint32_t sse: 1;
+        uint32_t sas: 2;
+        uint32_t isv: 1;
+        uint32_t _unused: 7;
+    } __attribute__((packed));
+} IssDataAbort;
+
+typedef enum {
+    data_abort_lower = 36,
+    data_abort = 37,
+} ExceptionClass;
+
+int mshv_store_regs(CPUState *cpu)
+{
+    int ret;
+
+    ret = set_standard_regs(cpu);
+    if (ret < 0) {
+        error_report("Failed to store standard registers");
+        return -1;
+    }
+
+    /* TODO: should store special registers? the equivalent hvf code doesn't */
+
+    return 0;
+}
+
+static int emulate_with_syndrome(CPUState *cpu,
+                                 struct hv_arm64_memory_intercept_message *info)
+{
+    ARMCPU *arm_cpu = ARM_CPU(cpu);
+    CPUARMState *env = &arm_cpu->env;
+    int ret;
+    EsrEl2 syndrome = { 0 };
+    syndrome.raw = info->syndrome;
+    int cpu_fd = mshv_vcpufd(cpu);
+    QemuMutex *guard;
+
+    guard = g_hash_table_lookup(cpu_guards, GUINT_TO_POINTER(cpu_fd));
+    if (!guard) {
+        error_report("failed to get cpu guard");
+        return -1;
+    }
+
+    uint8_t ec = syndrome.ec;
+    uint64_t gpa = info->guest_physical_address;
+
+    if (!(ec == data_abort_lower || ec == data_abort)) {
+        error_report("Unknown exception class 0x%x\n", ec);
+        return -1;
+    }
+
+    IssDataAbort iss = { 0 };
+    iss.raw = syndrome.iss;
+    if (!iss.isv) {
+        error_report("Invalid ESR EL2 ISV field\n");
+        return -1;
+    }
+
+    uint64_t len = 1ULL << iss.sas;
+    bool sign_extend = iss.sse;
+    uint64_t reg_index = iss.srt;
+
+    WITH_QEMU_LOCK_GUARD(guard) {
+        // Load the regs from MSHV
+        ret = mshv_load_regs(cpu);
+        if (ret < 0) {
+            error_report("Failed to load registers");
+            return -1;
+        }
+
+        if (iss.wnr) {
+            uint8_t data[8];
+            uint64_t val = reg_index < 31 ? env->xregs[reg_index] : 0ULL;
+            val = cpu_to_le64(val);
+
+            memcpy(data, &val, sizeof(val));
+            ret = mshv_guest_mem_write(gpa, data, len, false);
+            if (ret < 0) {
+                error_report("Failed to write guest memory");
+                return -1;
+            }
+        } else {
+            uint8_t data[8] = { 0 };
+            ret = mshv_guest_mem_read(gpa, data, len, false, false);
+            if (ret < 0) {
+                error_report("Failed to read guest memory");
+                return -1;
+            }
+
+            uint64_t val;
+            memcpy(&val, data, sizeof(val));
+
+            val = le64_to_cpu(val);
+
+            if (sign_extend) {
+                uint64_t shift = 64 - (len * 8);
+                val = (((int64_t)val << shift) >> shift);
+                if (!iss.sf) {
+                    val &= 0xffffffff;
+                }
+            }
+
+            env->xregs[reg_index] = val;
+        }
+
+        env->pc += (syndrome.il == 1) ? 4 : 2;
+
+        ret = mshv_store_regs(cpu);
+        if (ret < 0) {
+            error_report("failed to store registers");
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int handle_unmapped_mem(int vm_fd, CPUState *cpu,
+                               const struct hyperv_message *msg,
+                               MshvVmExit *exit_reason)
+{
+    struct hv_arm64_memory_intercept_message info = { 0 };
+    int ret;
+
+    ret = set_memory_info(msg, &info);
+    if (ret < 0) {
+        error_report("failed to convert message to memory info");
+        return -1;
+    }
+
+    ret = emulate_with_syndrome(cpu, &info);
+    if (ret < 0) {
+        error_report("Failed to emulate with syndrome");
+        return -1;
+    }
+
+    return 0;
+}
+
 int mshv_run_vcpu(int vm_fd, CPUState *cpu, hv_message *msg, MshvVmExit *exit)
 {
     int ret;
     hv_message exit_msg = {0};
-    // enum MshvVmExit exit_reason;
+    enum MshvVmExit exit_reason = {0};
     int cpu_fd = mshv_vcpufd(cpu);
 
-    printf("mshv_run_vcpu %d\n", cpu_fd);
+    // printf("mshv_run_vcpu %d\n", cpu_fd);
 
     ret = ioctl(cpu_fd, MSHV_RUN_VP, &exit_msg);
-    printf("mshv_run_vcpu1 %d\n", cpu_fd);
+    // printf("mshv_run_vcpu1 %d\n", cpu_fd);
 
     if (ret < 0)
     {
@@ -304,35 +483,20 @@ int mshv_run_vcpu(int vm_fd, CPUState *cpu, hv_message *msg, MshvVmExit *exit)
         return MshvVmExitShutdown;
     }
 
-    printf("exit_msg: %d\n", exit_msg.header.message_type);
+    // printf("exit_msg: %d\n", exit_msg.header.message_type);
 
-    // switch (exit_msg.header.message_type) {
-    // case HVMSG_UNRECOVERABLE_EXCEPTION:
-    //     *msg = exit_msg;
-    //     return MshvVmExitShutdown;
-    // case HVMSG_UNMAPPED_GPA:
-    //     ret = handle_unmapped_mem(vm_fd, cpu, &exit_msg, &exit_reason);
-    //     if (ret < 0) {
-    //         error_report("failed to handle unmapped memory");
-    //         return -1;
-    //     }
-    //     return exit_reason;
-    // case HVMSG_GPA_INTERCEPT:
-    //     ret = handle_mmio(cpu, &exit_msg, &exit_reason);
-    //     if (ret < 0) {
-    //         error_report("failed to handle mmio");
-    //         return -1;
-    //     }
-    //     return exit_reason;
-    // case HVMSG_X64_IO_PORT_INTERCEPT:
-    //     ret = handle_pio(cpu, &exit_msg);
-    //     if (ret < 0) {
-    //         return MshvVmExitSpecial;
-    //     }
-    //     return MshvVmExitIgnore;
-    // default:
-    //     msg = &exit_msg;
-    // }
+    switch (exit_msg.header.message_type) {
+    case HVMSG_UNMAPPED_GPA:
+        ret = handle_unmapped_mem(vm_fd, cpu, &exit_msg, &exit_reason);
+        if (ret < 0) {
+            error_report("failed to handle unmapped memory");
+            return -1;
+        }
+        return exit_reason;
+    default:
+        printf("exit_msg: %d\n", exit_msg.header.message_type);
+        msg = &exit_msg;
+    }
 
     *exit = MshvVmExitIgnore;
     return 0;
