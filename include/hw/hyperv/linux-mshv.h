@@ -1674,6 +1674,72 @@ struct hv_message {
 
 /* From  github.com/rust-vmm/mshv-bindings/src/x86_64/regs.rs */
 
+#if defined(__aarch64__)
+
+union hv_arm64_vp_execution_state {
+	__u16 as_uint16;
+	struct {
+		__u16 cpl : 2;
+		__u16 debug_active : 1;
+		__u16 interruption_pending : 1;
+		__u16 vtl : 4;
+		__u16 virtualization_fault_active : 1;
+		__u16 reserved : 7;
+	} __attribute__((packed));
+} __attribute__((packed));
+
+struct hv_arm64_intercept_message_header {
+	__u32 vp_index;
+	__u8 instruction_length;
+	__u8 intercept_access_type;
+	union hv_arm64_vp_execution_state execution_state;
+	__u64 pc;
+	__u64 cpsr;
+} __attribute__((packed));
+
+union hv_arm64_register_access_info {
+	union hv_register_value source_value;
+	__u32 destination_register; /* enum hv_register_name */
+} __attribute__((packed));
+
+struct hv_arm64_register_intercept_message {
+	struct hv_arm64_intercept_message_header Header;
+	struct {
+		__u8 is_memory_op : 1;
+		__u8 reserved : 7;
+	} __attribute__((packed));
+	__u8 reserved8;
+	__u16 reserved16;
+	__u32 register_name; /* enum hv_register_name */
+	union hv_arm64_register_access_info access_info;
+} __attribute__((packed));
+
+union hv_arm64_memory_access_info {
+	__u8 as_uint8;
+	struct {
+		__u8 gva_valid : 1;
+		__u8 gva_gpa_valid : 1;
+		__u8 hypercall_output_pending : 1;
+		__u8 reserved : 5;
+	} __attribute__((packed));
+
+} __attribute__((packed));
+
+struct hv_arm64_memory_intercept_message {
+	struct hv_arm64_intercept_message_header header;
+	__u32 cache_type; /* enum hv_cache_type */
+	__u8 instruction_byte_count;
+	union hv_arm64_memory_access_info memory_access_info;
+	__u16 reserved1;
+	__u8 instruction_bytes[4];
+	__u32 reserved2;
+	__u64 guest_virtual_address;
+	__u64 guest_physical_address;
+	__u64 syndrome;
+} __attribute__((packed));
+
+#endif
+
 struct hv_cpuid_entry {
 	uint32_t function;
 	uint32_t index;
