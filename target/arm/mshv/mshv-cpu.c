@@ -23,7 +23,7 @@
 static QemuMutex *cpu_guards_lock;
 static GHashTable *cpu_guards;
 
-static enum hv_register_name STANDARD_REGISTER_NAMES[32] = {
+static enum hv_register_name STANDARD_REGISTER_NAMES[38] = {
     HV_ARM64_REGISTER_X0,
     HV_ARM64_REGISTER_X1,
     HV_ARM64_REGISTER_X2,
@@ -56,6 +56,12 @@ static enum hv_register_name STANDARD_REGISTER_NAMES[32] = {
     HV_ARM64_REGISTER_FP,
     HV_ARM64_REGISTER_LR,
     HV_ARM64_REGISTER_PC,
+    HV_ARM64_REGISTER_SP,
+    HV_ARM64_REGISTER_PSTATE,//33
+    HV_ARM64_REGISTER_SP_EL1,//34
+    HV_ARM64_REGISTER_ELR_EL1,//35
+    HV_ARM64_REGISTER_FPCR,//36
+    HV_ARM64_REGISTER_FPSR,//37
 };
 
 int mshv_set_generic_regs(int cpu_fd, hv_register_assoc *assocs, size_t n_regs)
@@ -82,6 +88,9 @@ static int get_generic_regs(int cpu_fd, struct hv_register_assoc *assocs,
 static void populate_standard_regs(const hv_register_assoc *assocs,
                                    CPUARMState *env)
 {
+    uint64_t val;
+    uint32_t fpr;
+
     env->xregs[0] = assocs[0].value.reg64;
     env->xregs[1] = assocs[1].value.reg64;
     env->xregs[2] = assocs[2].value.reg64;
@@ -114,6 +123,19 @@ static void populate_standard_regs(const hv_register_assoc *assocs,
     env->xregs[29] = assocs[29].value.reg64;
     env->xregs[30] = assocs[30].value.reg64;
     env->pc = assocs[31].value.reg64;
+    env->sp_el[0] = assocs[32].value.reg64;
+    env->sp_el[1] = assocs[34].value.reg64;
+    env->elr_el[1] = assocs[35].value.reg64;
+    
+    val = assocs[33].value.reg64;
+    env->aarch64 = ((val & PSTATE_nRW) == 0);
+    pstate_write(env, val);
+
+    fpr = assocs[37].value.reg32;
+    vfp_set_fpsr(env, fpr);
+
+    fpr = assocs[36].value.reg32;
+    vfp_set_fpcr(env, fpr);
 }
 
 int mshv_get_standard_regs(CPUState *cpu)
@@ -166,6 +188,8 @@ static int set_standard_regs(const CPUState *cpu)
     ARMCPU *arm_cpu = ARM_CPU(cpu);
     CPUARMState *env = &arm_cpu->env;
     int cpu_fd = mshv_vcpufd(cpu);
+    uint64_t val;
+    uint32_t fpr;
 
     assocs = g_new0(hv_register_assoc, n_regs);
     for (size_t i = 0; i < n_regs; i++)
@@ -205,6 +229,19 @@ static int set_standard_regs(const CPUState *cpu)
     assocs[29].value.reg64 = env->xregs[29];
     assocs[30].value.reg64 = env->xregs[30];
     assocs[31].value.reg64 = env->pc;
+    assocs[32].value.reg64 = env->sp_el[0];
+    assocs[34].value.reg64 = env->sp_el[1];
+    assocs[35].value.reg64 = env->elr_el[1];
+
+    val = pstate_read(env);
+    assocs[33].value.reg64 = val;
+
+    fpr = vfp_get_fpsr(env);
+    assocs[37].value.reg32 = fpr;
+
+    fpr = vfp_get_fpcr(env);
+    assocs[36].value.reg32 = fpr;
+
 
     // printf("set_standard_regs: pc: %lx\n", env->pc);
 
@@ -477,9 +514,8 @@ int mshv_run_vcpu(int vm_fd, CPUState *cpu, hv_message *msg, MshvVmExit *exit)
     ret = ioctl(cpu_fd, MSHV_RUN_VP, &exit_msg);
     // printf("mshv_run_vcpu1 %d\n", cpu_fd);
 
-    if (ret < 0)
-    {
-        error_report("failed to run vcpu: %s", strerror(errno));
+    if (ret < 0) {
+        error_report("failed to run vcpu: %d %d", errno, ret);
         return MshvVmExitShutdown;
     }
 
