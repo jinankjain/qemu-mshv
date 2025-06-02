@@ -71,7 +71,21 @@ typedef struct hyperv_message hv_message;
 
 #ifdef CONFIG_MSHV_IS_POSSIBLE
 extern bool mshv_allowed;
+extern bool mshv_kernel_irqchip;
+
 #define mshv_enabled() (mshv_allowed)
+
+/**
+ * mshv_irqchip_in_kernel:
+ *
+ * Returns: true if an in-kernel irqchip was created.
+ * What this actually means is architecture and machine model
+ * specific: on virt, for instance, it means that the GIC
+ * is in kernel.  This function should never be used from generic
+ * target-independent code: use one of the following functions or
+ * some other specific check instead.
+ */
+#define mshv_irqchip_in_kernel() (mshv_kernel_irqchip)
 
 typedef struct MshvMemoryListener {
   MemoryListener listener;
@@ -90,6 +104,8 @@ typedef struct MshvState {
   /* number of listeners */
   int nr_as;
   MshvAddressSpace *as;
+  bool kernel_irqchip_allowed;
+  bool kernel_irqchip_required;
 } MshvState;
 extern MshvState *mshv_state;
 
@@ -268,5 +284,7 @@ void mshv_irqchip_release_virq(int virq);
 int mshv_irqchip_add_irqfd_notifier_gsi(const EventNotifier *n,
                                         const EventNotifier *rn, int virq);
 int mshv_irqchip_remove_irqfd_notifier_gsi(const EventNotifier *n, int virq);
+
+bool mshv_kernel_irqchip_allowed(void);
 
 #endif

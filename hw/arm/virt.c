@@ -777,6 +777,8 @@ static void create_gic(VirtMachineState *vms, MemoryRegion *mem)
     uint32_t nb_redist_regions = 0;
     int revision;
 
+    printf("Creating GICv%d\n", vms->gic_version);
+
     if (vms->gic_version == VIRT_GIC_VERSION_2) {
         gictype = gic_class_name();
     } else {
@@ -2005,6 +2007,7 @@ static void finalize_gic_version(VirtMachineState *vms)
     } else if (tcg_enabled() || hvf_enabled() || qtest_enabled() || mshv_enabled())  {
         gics_supported |= VIRT_GIC_VERSION_2_MASK;
         if (module_object_class_by_name("arm-gicv3")) {
+            printf("Coming into this\n");
             gics_supported |= VIRT_GIC_VERSION_3_MASK;
             if (vms->virt) {
                 /* GICv4 only makes sense if CPU has EL2 */

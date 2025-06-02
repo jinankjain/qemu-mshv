@@ -397,5 +397,10 @@ type_init(register_types)
 
 const char *gic_class_name(void)
 {
-    return kvm_irqchip_in_kernel() ? "kvm-arm-gic" : "arm_gic";
+    // return kvm_irqchip_in_kernel() ? "kvm-arm-gic" : "arm_gic";
+    if (kvm_irqchip_in_kernel()) {
+        return "kvm-arm-gic";
+    } else {
+        return "arm_gic";
+    }
 }

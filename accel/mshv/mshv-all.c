@@ -34,6 +34,7 @@
 #include "system/accel-blocker.h"
 #include "system/address-spaces.h"
 #include "system/mshv.h"
+#include "qapi/qapi-visit-common.h"
 #include "system/reset.h"
 #include "trace.h"
 #include <err.h>
@@ -47,6 +48,50 @@ DECLARE_INSTANCE_CHECKER(MshvState, MSHV_STATE, TYPE_MSHV_ACCEL)
 bool mshv_allowed;
 
 MshvState *mshv_state;
+bool mshv_kernel_irqchip;
+
+static void mshv_set_kernel_irqchip(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    MshvState *ms = MSHV_STATE(obj);
+    OnOffSplit mode;
+
+    if (!visit_type_OnOffSplit(v, name, &mode, errp)) {
+        return;
+    }
+
+    printf("Coming here\n");
+
+    switch (mode) {
+    case ON_OFF_SPLIT_ON:
+        ms->kernel_irqchip_allowed = true;
+        ms->kernel_irqchip_required = true;
+        break;
+
+    case ON_OFF_SPLIT_OFF:
+        ms->kernel_irqchip_allowed = false;
+        ms->kernel_irqchip_required = false;
+        break;
+
+    case ON_OFF_SPLIT_SPLIT:
+        error_setg(errp, "MSHV: split irqchip currently not supported");
+        error_append_hint(
+            errp, "Try without kernel-irqchip or with kernel-irqchip=on|off");
+        break;
+
+    default:
+        /*
+         * The value was checked in visit_type_OnOffSplit() above. If
+         * we get here, then something is wrong in QEMU.
+         */
+        abort();
+    }
+}
+
+bool mshv_kernel_irqchip_allowed(void)
+{
+    return mshv_state->kernel_irqchip_allowed;
+}
 
 static int init_mshv(void)
 {
@@ -452,10 +497,17 @@ static int mshv_init_vcpu(CPUState *cpu)
     return 0;
 }
 
+static void mshv_irqchip_create(MshvState *s)
+{
+    mshv_kernel_irqchip = true;
+}
+
 static int mshv_init(MachineState *ms)
 {
     MshvState *s;
     int mshv_fd, ret;
+
+    printf("MSHV: Initializing MSHV accelerator\n");
 
     s = MSHV_STATE(ms->accelerator);
 
@@ -488,6 +540,10 @@ static int mshv_init(MachineState *ms)
     mshv_state = s;
 
     qemu_register_reset(mshv_reset, NULL);
+
+    if (s->kernel_irqchip_allowed) {
+        mshv_irqchip_create(s);
+    }
 
     mshv_init_irq(s);
 
@@ -722,12 +778,19 @@ static void mshv_accel_class_init(ObjectClass *oc, const void *data)
     ac->name = "MSHV";
     ac->init_machine = mshv_init;
     ac->allowed = &mshv_allowed;
+
+    object_class_property_add(oc, "kernel-irqchip", "on|off|split",
+        NULL, mshv_set_kernel_irqchip,
+        NULL, NULL);
+    object_class_property_set_description(oc, "kernel-irqchip",
+        "Configure WHPX in-kernel irqchip");
 }
 
 static void mshv_accel_instance_init(Object *obj)
 {
     MshvState *s = MSHV_STATE(obj);
 
+    s->kernel_irqchip_allowed = true; 
     s->vm = 0;
 }
 
